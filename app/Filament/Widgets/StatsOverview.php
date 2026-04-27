@@ -6,42 +6,65 @@ use App\Models\Asset;
 use App\Models\Keuangan;
 use Filament\Widgets\StatsOverviewWidget as BaseWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
+use Illuminate\Support\Carbon;
 
 class StatsOverview extends BaseWidget
 {
     protected static ?int $sort = 1;
     protected int|string|array $columnSpan = 'full';
 
+    protected function getPeriodeBilling(): array
+    {
+        $today = Carbon::today();
+
+        // Jika hari ini >= 25, periode mulai tgl 25 bulan ini
+        // Jika hari ini < 25, periode mulai tgl 25 bulan lalu
+        if ($today->day >= 25) {
+            $mulai = Carbon::create($today->year, $today->month, 25)->startOfDay();
+        } else {
+            $mulai = Carbon::create($today->year, $today->month, 25)->subMonth()->startOfDay();
+        }
+
+        $selesai = $mulai->copy()->addMonth()->subDay()->endOfDay(); // tgl 24 bulan depan
+
+        return [$mulai, $selesai];
+    }
+
     protected function getStats(): array
     {
-        $totalMasuk = Keuangan::where('jenis', 'Masuk')->sum('jumlah');
-        $totalKeluar = Keuangan::where('jenis', 'Keluar')->sum('jumlah');
+        [$mulai, $selesai] = $this->getPeriodeBilling();
+
+        // Keuangan periode billing
+        $totalMasuk = Keuangan::where('jenis', 'Masuk')
+            ->whereBetween('tanggal', [$mulai, $selesai])
+            ->sum('jumlah');
+
+        $totalKeluar = Keuangan::where('jenis', 'Keluar')
+            ->whereBetween('tanggal', [$mulai, $selesai])
+            ->sum('jumlah');
+
         $saldo = $totalMasuk - $totalKeluar;
 
+        // Keuangan all time
+        $totalMasukAllTime = Keuangan::where('jenis', 'Masuk')->sum('jumlah');
+        $totalKeluarAllTime = Keuangan::where('jenis', 'Keluar')->sum('jumlah');
+
+        // Asset
         $totalAsset = Asset::count();
         $totalNilaiAsset = Asset::sum('harga');
         $assetBaik = Asset::where('kondisi', 'Baik')->count();
         $assetRusak = Asset::where('kondisi', 'Rusak')->count();
         $assetPerbaikan = Asset::where('kondisi', 'Dalam Perbaikan')->count();
 
-        $masukBulanIni = Keuangan::where('jenis', 'Masuk')
-            ->whereMonth('tanggal', now()->month)
-            ->whereYear('tanggal', now()->year)
-            ->sum('jumlah');
-
-        $keluarBulanIni = Keuangan::where('jenis', 'Keluar')
-            ->whereMonth('tanggal', now()->month)
-            ->whereYear('tanggal', now()->year)
-            ->sum('jumlah');
-
+        // Trend harian dalam periode billing (7 hari terakhir)
         $trendMasuk = Keuangan::where('jenis', 'Masuk')
-            ->where('tanggal', '>=', now()->subDays(7))
+            ->whereBetween('tanggal', [$mulai, $selesai])
             ->selectRaw('DATE(tanggal) as date, SUM(jumlah) as total')
             ->groupBy('date')->orderBy('date')
             ->pluck('total')->toArray();
 
         $trendKeluar = Keuangan::where('jenis', 'Keluar')
-            ->where('tanggal', '>=', now()->subDays(7))
+            ->whereBetween('tanggal', [$mulai, $selesai])
             ->selectRaw('DATE(tanggal) as date, SUM(jumlah) as total')
             ->groupBy('date')->orderBy('date')
             ->pluck('total')->toArray();
@@ -51,21 +74,23 @@ class StatsOverview extends BaseWidget
             ->groupBy('month')->orderBy('month')
             ->pluck('total')->toArray();
 
+        $labelPeriode = $mulai->format('d M Y') . ' - ' . $selesai->format('d M Y');
+
         return [
-            // === KEUANGAN ===
-            Stat::make('💰 Total Pemasukan', 'Rp ' . number_format($totalMasuk, 0, ',', '.'))
-                ->description('Bulan ini: Rp ' . number_format($masukBulanIni, 0, ',', '.'))
+            // === KEUANGAN PERIODE BILLING ===
+            Stat::make('💰 Pemasukan Periode Ini', 'Rp ' . number_format($totalMasuk, 0, ',', '.'))
+                ->description('Periode: ' . $labelPeriode)
                 ->descriptionIcon('heroicon-m-arrow-trending-up')
                 ->chart($trendMasuk ?: [0])
                 ->color('success'),
 
-            Stat::make('💸 Total Pengeluaran', 'Rp ' . number_format($totalKeluar, 0, ',', '.'))
-                ->description('Bulan ini: Rp ' . number_format($keluarBulanIni, 0, ',', '.'))
+            Stat::make('💸 Pengeluaran Periode Ini', 'Rp ' . number_format($totalKeluar, 0, ',', '.'))
+                ->description('Periode: ' . $labelPeriode)
                 ->descriptionIcon('heroicon-m-arrow-trending-down')
                 ->chart($trendKeluar ?: [0])
                 ->color('danger'),
 
-            Stat::make('🏦 Saldo Bersih', 'Rp ' . number_format($saldo, 0, ',', '.'))
+            Stat::make('🏦 Saldo Periode Ini', 'Rp ' . number_format($saldo, 0, ',', '.'))
                 ->description($saldo >= 0 ? '✅ Keuangan Sehat' : '⚠️ Perlu Perhatian')
                 ->descriptionIcon('heroicon-m-banknotes')
                 ->color($saldo >= 0 ? 'success' : 'danger'),
